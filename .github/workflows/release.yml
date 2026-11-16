@@ -1,0 +1,53 @@
+name: Build Linux release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release-linux-x86_64:
+    name: Build Linux x86_64 release
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^version = "\([0-9.]*\)"/\1/p' Cargo.toml | head -n 1)
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          test "$VERSION" = "$TAG_VERSION" || {
+            echo "Tag $TAG_VERSION does not match Cargo.toml version $VERSION" >&2
+            exit 1
+          }
+      - name: Test and build
+        run: |
+          cargo test --all-targets --locked
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo build --release --locked
+      - name: Package binary
+        run: |
+          mkdir -p dist/forgehelpyou
+          install -m 0755 target/release/forgehelpyou dist/forgehelpyou/forgehelpyou
+          install -m 0755 install.sh dist/forgehelpyou/install.sh
+          install -m 0755 uninstall.sh dist/forgehelpyou/uninstall.sh
+          cp README.md README_RU.md SECURITY.md LICENSE dist/forgehelpyou/
+          tar -C dist -czf "dist/forgehelpyou-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" forgehelpyou
+          cd dist
+          sha256sum "forgehelpyou-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" > "forgehelpyou-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz.sha256"
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ForgeHelpYou ${{ github.ref_name }}
+          body_path: CHANGELOG.md
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256

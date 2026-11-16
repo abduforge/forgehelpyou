@@ -1,0 +1,17 @@
+[package]
+name = "forgehelpyou"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "A small, privacy-first Linux log viewer and search tool"
+license = "MIT"
+repository = "https://github.com/abduforge/forgehelpyou"
+readme = "README.md"
+
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
