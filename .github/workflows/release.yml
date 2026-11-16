@@ -30,6 +30,7 @@ jobs:
           }
       - name: Test and build
         run: |
+          cargo fmt --all
           cargo test --all-targets --locked
           cargo clippy --all-targets --locked -- -D warnings
           cargo build --release --locked
@@ -37,9 +38,7 @@ jobs:
         run: |
           mkdir -p dist/forgehelpyou
           install -m 0755 target/release/forgehelpyou dist/forgehelpyou/forgehelpyou
-          install -m 0755 install.sh dist/forgehelpyou/install.sh
-          install -m 0755 uninstall.sh dist/forgehelpyou/uninstall.sh
-          cp README.md README_RU.md SECURITY.md LICENSE dist/forgehelpyou/
+          cp README.md README_RU.md CHANGELOG.md LICENSE dist/forgehelpyou/
           tar -C dist -czf "dist/forgehelpyou-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" forgehelpyou
           cd dist
           sha256sum "forgehelpyou-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" > "forgehelpyou-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz.sha256"

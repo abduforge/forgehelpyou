@@ -1,142 +1,65 @@
-<div align="center">
-
 # ForgeHelpYou
 
-**Системные логи Linux — проще и понятнее.**
+Небольшая CLI-утилита на Rust для чтения системных логов Linux. Я сделал её, потому что хотел быстро проверять обычные журналы, не вспоминая каждый раз их пути и параметры команд.
 
-[![Download latest release](https://img.shields.io/github/v/release/abduforge/forgehelpyou?display_name=tag&style=for-the-badge&label=СКАЧАТЬ%20ДЛЯ%20LINUX)](https://github.com/abduforge/forgehelpyou/releases/latest)
-[![CI](https://github.com/abduforge/forgehelpyou/actions/workflows/ci.yml/badge.svg)](https://github.com/abduforge/forgehelpyou/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+Это небольшой учебный проект, а не библиотека для записи логов и не замена `journalctl`, `log` или `tracing`. Программа читает журналы, которые уже существуют.
 
-**Найди лог. Посмотри, что произошло. Найди ошибку. Без сложной настройки.**
+## Установка
 
-[English documentation](README.md) · [Releases](https://github.com/abduforge/forgehelpyou/releases) · [Безопасность](SECURITY.md)
-
-</div>
-
----
-
-## Быстрый старт
-
-1. Нажми **СКАЧАТЬ ДЛЯ LINUX** сверху и скачай архив для своей системы.
-2. Распакуй архив.
-3. Открой терминал в распакованной папке и выполни:
+Для готового бинарного файла Linux x86_64 скачай архив со страницы [Releases](https://github.com/abduforge/forgehelpyou/releases) и выполни:
 
 ```bash
-./install.sh
+tar -xzf forgehelpyou-*-x86_64-unknown-linux-gnu.tar.gz
+install -Dm755 forgehelpyou/forgehelpyou ~/.local/bin/forgehelpyou
 ```
 
-4. Посмотри, какие журналы доступны на компьютере:
+Или собери и установи программу из папки с исходниками через Cargo:
 
 ```bash
-forgehelpyou sources
+cargo install --path .
 ```
 
-5. Покажи последние системные сообщения:
+Удаление версии, установленной через Cargo: `cargo uninstall forgehelpyou`. Для вручную скопированного бинарного файла: `rm ~/.local/bin/forgehelpyou`.
+
+## Команды
 
 ```bash
-forgehelpyou show syslog --lines 80
+forgehelpyou recent                         # последние сообщения из доступного журнала
+forgehelpyou errors                         # поиск типичных предупреждений и ошибок
+forgehelpyou sources                        # известные журналы и доступ к ним
+forgehelpyou show auth --lines 80           # последние 80 строк auth.log
+forgehelpyou search syslog "failed" --ignore-case
+forgehelpyou journal --since "1 hour ago"  # только для systemd
 ```
 
-Готово. Если в твоём дистрибутиве нет `/var/log/syslog`, команда `forgehelpyou sources` покажет существующие журналы.
+`recent` сначала проверяет обычные текстовые журналы. Если ни один не доступен, программа пробует `journalctl`, если он установлен. `errors` по умолчанию проверяет последние 500 строк. Можно указать псевдоним или путь и изменить размер окна через `--lines N`. Фильтр ищет простые ключевые слова, поэтому может пропустить необычную ошибку или показать безобидную строку.
 
-## Что умеет ForgeHelpYou
+Полный список параметров: `forgehelpyou --help`. Вместо псевдонима (`syslog`, `auth`, `kern` и т. д.) можно передать путь к файлу.
 
-ForgeHelpYou — небольшая read-only CLI-утилита для просмотра и поиска по локальным журналам Linux.
+## Как читаются файлы
 
-| Что нужно сделать | Команда |
-|---|---|
-| Показать доступные журналы | `forgehelpyou sources` |
-| Показать последние 100 строк | `forgehelpyou show syslog` |
-| Показать последние 80 строк | `forgehelpyou show syslog --lines 80` |
-| Найти строки со словом `failed` | `forgehelpyou show auth --contains failed --ignore-case` |
-| Искать по всему журналу | `forgehelpyou search auth "authentication failure" --ignore-case` |
-| Прочитать systemd journal | `forgehelpyou journal --since "1 hour ago" --priority warning` |
-| Проверить окружение | `forgehelpyou doctor` |
-| Открыть справку | `forgehelpyou --help` |
+- `show` читает файл с конца небольшими блоками. Для просмотра последних строк не нужно загружать весь файл в память.
+- `search` читает файл построчно и хранит только ограниченное число совпадений.
+- Управляющие символы из файлов экранируются перед выводом в терминал.
+- Сторонние Rust-крейты не используются.
 
-Вместо псевдонима (`syslog`, `auth`, `kern`, `dpkg` и другие) можно указать собственный путь к файлу.
+## Важно
 
-## Какие журналы поддерживаются
+Наличие журналов зависит от дистрибутива и настроек системы. Для некоторых файлов могут потребоваться права, которых у обычного пользователя нет. ForgeHelpYou не запускает `sudo`, не меняет права доступа, не редактирует и не удаляет журналы, не отправляет данные по сети.
 
-Проверяются распространённые пути:
+В логах могут быть имена пользователей, IP-адреса, имена компьютеров и секреты. Проверь вывод перед публикацией. Анализируй только свои системы или те, которые тебе разрешено администрировать.
 
-- `/var/log/syslog` и `/var/log/messages`
-- `/var/log/auth.log` и `/var/log/secure`
-- `/var/log/kern.log` и `/var/log/daemon.log`
-- `/var/log/dpkg.log` и `/var/log/boot.log`
-- `/var/log/Xorg.0.log`
-- `/var/log/apt/history.log`
+## Сборка и проверка
 
-Если установлен `journalctl` и у пользователя есть права, можно читать журнал systemd. Файловые журналы работают независимо от systemd — это полезно для систем с SysVinit.
-
-## Примеры поиска
-
-Найти сообщения о неудачной аутентификации:
-
-```bash
-forgehelpyou search auth "failed" --ignore-case
-```
-
-Показать последние сообщения ядра:
-
-```bash
-forgehelpyou show kern --lines 120
-```
-
-Искать в указанном вручную файле:
-
-```bash
-forgehelpyou search ./my-app.log "connection refused" --ignore-case --limit 50
-```
-
-Попробовать на безопасном примере из проекта:
-
-```bash
-forgehelpyou search examples/sample-syslog.txt "failed" --ignore-case
-```
-
-Показать предупреждения systemd за последний час (только systemd):
-
-```bash
-forgehelpyou journal --since "1 hour ago" --priority warning
-```
-
-## Сборка из исходников
-
-Требования: Linux и Rust 1.70 или новее.
+Требуется Rust 1.70 или новее.
 
 ```bash
 cargo fmt --all
 cargo test --all-targets --locked
 cargo clippy --all-targets --locked -- -D warnings
 cargo build --release --locked
-./install.sh
 ```
 
-Проект использует только стандартную библиотеку Rust. Дополнительные Rust-крейты не нужны.
+## Лицензия
 
-## Приватность и безопасность
-
-- ForgeHelpYou читает журналы локально. Он не загружает, не изменяет, не ротирует и не удаляет их.
-- Команды не запускаются через shell. Фильтры для journalctl передаются как отдельные аргументы.
-- Программа не запускает `sudo` автоматически и не меняет права на файлы.
-- Управляющие символы из обычных лог-файлов экранируются перед выводом в терминал.
-- В логах могут быть имена пользователей, IP-адреса, имена компьютеров, данные сессий и иногда секреты. Перед публикацией отчётов проверь и удали чувствительные данные.
-- Анализируй только свои системы или системы, которые тебе разрешено администрировать.
-
-Если у пользователя нет доступа к журналу, используй учётную запись с соответствующими правами. Не делай системные логи доступными всем только ради этой программы.
-
-## Удаление
-
-```bash
-./uninstall.sh
-```
-
-Команда удалит исполняемый файл из `~/.local/bin`. Системные журналы она не удаляет и не меняет.
-
-## Состояние проекта
-
-ForgeHelpYou 0.1.0 — ранняя версия. Сейчас проект умеет находить распространённые источники логов, показывать последние строки, искать текст в файлах и при наличии systemd читать его журнал. Новые функции будут добавляться после тестирования и обратной связи.
-
-**Часть экосистемы AbduForge.**
+MIT. См. [LICENSE](LICENSE).

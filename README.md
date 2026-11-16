@@ -1,142 +1,65 @@
-<div align="center">
-
 # ForgeHelpYou
 
-**Linux logs, made easier.**
+A small Rust command-line tool for reading Linux logs. I made it because I wanted a quick way to check common log files without remembering every path and option.
 
-[![Download latest release](https://img.shields.io/github/v/release/abduforge/forgehelpyou?display_name=tag&style=for-the-badge&label=DOWNLOAD%20FOR%20LINUX)](https://github.com/abduforge/forgehelpyou/releases/latest)
-[![CI](https://github.com/abduforge/forgehelpyou/actions/workflows/ci.yml/badge.svg)](https://github.com/abduforge/forgehelpyou/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+It is a small learning project, not a logging framework and not a replacement for `journalctl`, `log`, or `tracing`. It reads logs that already exist.
 
-**Find a log. Read what happened. Search for the error. No complicated setup.**
+## Install
 
-[Русская документация](README_RU.md) · [Releases](https://github.com/abduforge/forgehelpyou/releases) · [Security](SECURITY.md)
-
-</div>
-
----
-
-## Get started
-
-1. Click **DOWNLOAD FOR LINUX** above and download the archive for your system.
-2. Extract it.
-3. Open a terminal in the extracted folder and run:
+For a prebuilt Linux x86_64 binary, download the archive from [Releases](https://github.com/abduforge/forgehelpyou/releases), then run:
 
 ```bash
-./install.sh
+tar -xzf forgehelpyou-*-x86_64-unknown-linux-gnu.tar.gz
+install -Dm755 forgehelpyou/forgehelpyou ~/.local/bin/forgehelpyou
 ```
 
-4. List the log files available on your computer:
+Or build and install from the source directory with Cargo:
 
 ```bash
-forgehelpyou sources
+cargo install --path .
 ```
 
-5. View recent system messages:
+Remove a Cargo installation with `cargo uninstall forgehelpyou`. Remove a manually installed binary with `rm ~/.local/bin/forgehelpyou`.
+
+## Commands
 
 ```bash
-forgehelpyou show syslog --lines 80
+forgehelpyou recent                         # recent messages from an available log
+forgehelpyou errors                         # common warning/error lines
+forgehelpyou sources                        # known log files and access status
+forgehelpyou show auth --lines 80           # last 80 lines from auth.log
+forgehelpyou search syslog "failed" --ignore-case
+forgehelpyou journal --since "1 hour ago"  # systemd only
 ```
 
-That's it. If your distribution does not have `/var/log/syslog`, use `forgehelpyou sources` to see which files are available.
+`recent` checks common text logs first. If none can be read, it tries `journalctl` when available. `errors` checks the last 500 lines by default; pass a source path or alias and `--lines N` to change the input. Its keyword list is intentionally simple, so it can miss unusual messages or match harmless ones.
 
-## What it does
+Use `forgehelpyou --help` for all options. A source can be an alias such as `syslog`, `auth`, or `kern`, or a path to a log file.
 
-ForgeHelpYou is a small, read-only Linux command-line tool for viewing and searching local system logs.
+## How it reads files
 
-| You want to… | Run |
-|---|---|
-| See available log files | `forgehelpyou sources` |
-| View the last 100 lines | `forgehelpyou show syslog` |
-| View the last 80 lines | `forgehelpyou show syslog --lines 80` |
-| Show only lines containing `failed` | `forgehelpyou show auth --contains failed --ignore-case` |
-| Search an entire log | `forgehelpyou search auth "authentication failure" --ignore-case` |
-| Read the systemd journal | `forgehelpyou journal --since "1 hour ago" --priority warning` |
-| Check the local setup | `forgehelpyou doctor` |
-| Get help | `forgehelpyou --help` |
+- `show` reads backwards in small blocks, so asking for the last few lines does not require reading the whole file into memory.
+- `search` reads one line at a time and keeps only a limited number of matches.
+- Terminal control characters in file output are escaped before printing.
+- No third-party Rust crates are used.
 
-Use a source alias (`syslog`, `auth`, `kern`, `dpkg`, etc.) or pass a log-file path directly.
+## Notes
 
-## Supported log sources
+The available files depend on your Linux distribution and logging setup. Some files may require permissions your account does not have. ForgeHelpYou does not run `sudo`, change permissions, edit or delete logs, or send data over the network.
 
-ForgeHelpYou checks common paths including:
+Logs may contain usernames, IP addresses, hostnames, or secrets. Check the output before sharing it. Only inspect systems you own or are allowed to administer.
 
-- `/var/log/syslog` and `/var/log/messages`
-- `/var/log/auth.log` and `/var/log/secure`
-- `/var/log/kern.log` and `/var/log/daemon.log`
-- `/var/log/dpkg.log` and `/var/log/boot.log`
-- `/var/log/Xorg.0.log`
-- `/var/log/apt/history.log`
+## Build and test
 
-It can also read the systemd journal through `journalctl` when that tool is installed and the current account has permission. File-based logs are supported independently, which is useful on systems that do not run systemd.
-
-## Search examples
-
-Find failed login or authentication messages:
-
-```bash
-forgehelpyou search auth "failed" --ignore-case
-```
-
-Show recent kernel messages from a file:
-
-```bash
-forgehelpyou show kern --lines 120
-```
-
-Search a log you specify yourself:
-
-```bash
-forgehelpyou search ./my-app.log "connection refused" --ignore-case --limit 50
-```
-
-Try the included harmless sample log:
-
-```bash
-forgehelpyou search examples/sample-syslog.txt "failed" --ignore-case
-```
-
-Read warning-level journal entries from the last hour (systemd only):
-
-```bash
-forgehelpyou journal --since "1 hour ago" --priority warning
-```
-
-## Build from source
-
-Requirements: Linux and Rust 1.70 or newer.
+Requires Rust 1.70 or newer.
 
 ```bash
 cargo fmt --all
 cargo test --all-targets --locked
 cargo clippy --all-targets --locked -- -D warnings
 cargo build --release --locked
-./install.sh
 ```
 
-The project uses only the Rust standard library; no third-party Rust crates are required.
+## License
 
-## Privacy and safety
-
-- ForgeHelpYou reads log files locally. It does not upload, modify, rotate, or delete them.
-- It never runs commands through a shell. Journal filters are passed as process arguments.
-- It does not automatically use `sudo` or change file permissions.
-- Control characters in file-based log output are escaped before they are printed, reducing terminal-control injection risks.
-- Logs can contain usernames, IP addresses, hostnames, session details, and sometimes secrets. Review and redact output before sharing it publicly.
-- Only inspect systems and log files you own or are authorized to administer.
-
-If a log is not readable, use an account that is authorized to access it. Do not make sensitive log files world-readable just to use this tool.
-
-## Uninstall
-
-```bash
-./uninstall.sh
-```
-
-This removes the executable from `~/.local/bin`. It does not delete or alter any system logs.
-
-## Project status
-
-ForgeHelpYou 0.1.0 is an early release. It focuses on listing common log sources, viewing recent lines, searching text logs, and optionally reading the systemd journal. More features may be added after feedback and testing.
-
-**Part of the AbduForge ecosystem.**
+MIT. See [LICENSE](LICENSE).
