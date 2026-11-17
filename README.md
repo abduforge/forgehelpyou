@@ -28,18 +28,21 @@ forgehelpyou recent                         # recent messages from an available 
 forgehelpyou errors                         # common warning/error lines
 forgehelpyou sources                        # known log files and access status
 forgehelpyou show auth --lines 80           # last 80 lines from auth.log
-forgehelpyou search syslog "failed" --ignore-case
+forgehelpyou search syslog "failed" --ignore-case --context 2
 forgehelpyou journal --since "1 hour ago"  # systemd only
 ```
 
 `recent` checks common text logs first. If none can be read, it tries `journalctl` when available. `errors` checks the last 500 lines by default; pass a source path or alias and `--lines N` to change the input. Its keyword list is intentionally simple, so it can miss unusual messages or match harmless ones.
+
+`search --context N` prints up to N lines before and after each match. Overlapping context is merged, so the same line is not printed twice. The context value is limited to 20 lines on each side.
 
 Use `forgehelpyou --help` for all options. A source can be an alias such as `syslog`, `auth`, or `kern`, or a path to a log file.
 
 ## How it reads files
 
 - `show` reads backwards in small blocks, so asking for the last few lines does not require reading the whole file into memory.
-- `search` reads one line at a time and keeps only a limited number of matches.
+- `search` reads one line at a time and keeps only a limited number of matches plus requested context.
+- Invalid UTF-8 in a log is replaced with `�` instead of stopping the read.
 - Terminal control characters in file output are escaped before printing.
 - No third-party Rust crates are used.
 
@@ -54,7 +57,7 @@ Logs may contain usernames, IP addresses, hostnames, or secrets. Check the outpu
 Requires Rust 1.70 or newer.
 
 ```bash
-cargo fmt --all
+cargo fmt --all -- --check
 cargo test --all-targets --locked
 cargo clippy --all-targets --locked -- -D warnings
 cargo build --release --locked

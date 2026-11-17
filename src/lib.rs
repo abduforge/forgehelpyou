@@ -5,7 +5,7 @@
 //! The program uses only the Rust standard library. It does not create logs,
 //! change system settings, or send log contents over the network.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -15,6 +15,7 @@ pub const DEFAULT_LINE_COUNT: usize = 100;
 pub const MAX_LINE_COUNT: usize = 5_000;
 pub const DEFAULT_MATCH_LIMIT: usize = 100;
 pub const MAX_MATCH_LIMIT: usize = 10_000;
+pub const MAX_CONTEXT_LINES: usize = 20;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LogSource {
@@ -24,16 +25,56 @@ pub struct LogSource {
 }
 
 pub const LOG_SOURCES: &[LogSource] = &[
-    LogSource { key: "syslog", path: "/var/log/syslog", description: "General system messages (common on Debian-based systems)" },
-    LogSource { key: "messages", path: "/var/log/messages", description: "General system messages (used by some distributions)" },
-    LogSource { key: "auth", path: "/var/log/auth.log", description: "Authentication events (Debian-based systems)" },
-    LogSource { key: "secure", path: "/var/log/secure", description: "Authentication events (some other distributions)" },
-    LogSource { key: "kern", path: "/var/log/kern.log", description: "Kernel messages" },
-    LogSource { key: "daemon", path: "/var/log/daemon.log", description: "Background service messages" },
-    LogSource { key: "dpkg", path: "/var/log/dpkg.log", description: "Package installation activity" },
-    LogSource { key: "boot", path: "/var/log/boot.log", description: "Boot messages, when configured" },
-    LogSource { key: "xorg", path: "/var/log/Xorg.0.log", description: "X.Org display server log" },
-    LogSource { key: "apt-history", path: "/var/log/apt/history.log", description: "APT package transaction history" },
+    LogSource {
+        key: "syslog",
+        path: "/var/log/syslog",
+        description: "General system messages (common on Debian-based systems)",
+    },
+    LogSource {
+        key: "messages",
+        path: "/var/log/messages",
+        description: "General system messages (used by some distributions)",
+    },
+    LogSource {
+        key: "auth",
+        path: "/var/log/auth.log",
+        description: "Authentication events (Debian-based systems)",
+    },
+    LogSource {
+        key: "secure",
+        path: "/var/log/secure",
+        description: "Authentication events (some other distributions)",
+    },
+    LogSource {
+        key: "kern",
+        path: "/var/log/kern.log",
+        description: "Kernel messages",
+    },
+    LogSource {
+        key: "daemon",
+        path: "/var/log/daemon.log",
+        description: "Background service messages",
+    },
+    LogSource {
+        key: "dpkg",
+        path: "/var/log/dpkg.log",
+        description: "Package installation activity",
+    },
+    LogSource {
+        key: "boot",
+        path: "/var/log/boot.log",
+        description: "Boot messages, when configured",
+    },
+    LogSource {
+        key: "xorg",
+        path: "/var/log/Xorg.0.log",
+        description: "X.Org display server log",
+    },
+    LogSource {
+        key: "apt-history",
+        path: "/var/log/apt/history.log",
+        description: "APT package transaction history",
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +85,21 @@ pub struct LogMatch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResult {
+    pub matches: Vec<LogMatch>,
+    pub lines_scanned: usize,
+    pub results_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextLine {
+    pub line_number: usize,
+    pub text: String,
+    pub is_match: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextSearchResult {
+    pub lines: Vec<ContextLine>,
     pub matches: Vec<LogMatch>,
     pub lines_scanned: usize,
     pub results_truncated: bool,
@@ -89,7 +145,9 @@ pub fn source_state(path: &Path) -> SourceState {
     match open_regular_file(path) {
         Ok(_) => SourceState::Readable,
         Err(error) if error.kind() == io::ErrorKind::NotFound => SourceState::NotFound,
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => SourceState::PermissionDenied,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            SourceState::PermissionDenied
+        }
         Err(_) => SourceState::OtherError,
     }
 }
@@ -102,13 +160,18 @@ pub fn clamp_match_limit(value: usize) -> usize {
     value.clamp(1, MAX_MATCH_LIMIT)
 }
 
-fn decode_reverse_line(bytes_reversed: &mut Vec<u8>) -> io::Result<String> {
+pub fn clamp_context_lines(value: usize) -> usize {
+    value.min(MAX_CONTEXT_LINES)
+}
+
+fn decode_reverse_line(bytes_reversed: &mut Vec<u8>) -> String {
     bytes_reversed.reverse();
     if bytes_reversed.last() == Some(&b'\r') {
         bytes_reversed.pop();
     }
-    String::from_utf8(std::mem::take(bytes_reversed))
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    // Logs are byte streams in the wild. Invalid UTF-8 should not make the
+    // whole file unreadable; replace only malformed sequences.
+    String::from_utf8_lossy(bytes_reversed).into_owned()
 }
 
 /// Read the last `count` lines by walking backwards through the file.
@@ -147,7 +210,7 @@ pub fn tail_file(path: &Path, count: usize) -> io::Result<Vec<String>> {
                     skip_final_separator = false;
                     continue;
                 }
-                lines.push_front(decode_reverse_line(&mut pending_reversed)?);
+                lines.push_front(decode_reverse_line(&mut pending_reversed));
                 if lines.len() == count {
                     break;
                 }
@@ -160,10 +223,24 @@ pub fn tail_file(path: &Path, count: usize) -> io::Result<Vec<String>> {
     // The bytes before the first separator are the first line. This also
     // correctly preserves an empty first line in a file containing "\n".
     if lines.len() < count && position == 0 {
-        lines.push_front(decode_reverse_line(&mut pending_reversed)?);
+        lines.push_front(decode_reverse_line(&mut pending_reversed));
     }
 
     Ok(lines.into_iter().collect())
+}
+
+fn read_log_line(reader: &mut BufReader<File>, buffer: &mut Vec<u8>) -> io::Result<Option<String>> {
+    buffer.clear();
+    if reader.read_until(b'\n', buffer)? == 0 {
+        return Ok(None);
+    }
+    if buffer.last() == Some(&b'\n') {
+        buffer.pop();
+    }
+    if buffer.last() == Some(&b'\r') {
+        buffer.pop();
+    }
+    Ok(Some(String::from_utf8_lossy(buffer).into_owned()))
 }
 
 /// Search a text log line by line. Only matching lines are retained in memory.
@@ -173,29 +250,105 @@ pub fn search_file(
     ignore_case: bool,
     limit: usize,
 ) -> io::Result<SearchResult> {
+    let result = search_file_with_context(path, needle, ignore_case, limit, 0)?;
+    Ok(SearchResult {
+        matches: result.matches,
+        lines_scanned: result.lines_scanned,
+        results_truncated: result.results_truncated,
+    })
+}
+
+/// Search a log and retain up to `context` nearby lines around each match.
+/// Overlapping context windows are merged so a line is printed only once.
+pub fn search_file_with_context(
+    path: &Path,
+    needle: &str,
+    ignore_case: bool,
+    limit: usize,
+    context: usize,
+) -> io::Result<ContextSearchResult> {
     let file = open_regular_file(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut matches = Vec::new();
+    let mut output_lines = Vec::new();
+    let mut output_index = HashMap::new();
+    let mut previous = VecDeque::new();
+    let mut line_buffer = Vec::new();
     let limit = clamp_match_limit(limit);
-    let needle_normalized = if ignore_case { needle.to_lowercase() } else { needle.to_owned() };
+    let context = clamp_context_lines(context);
+    let needle_normalized = if ignore_case {
+        needle.to_lowercase()
+    } else {
+        needle.to_owned()
+    };
     let mut lines_scanned = 0usize;
     let mut results_truncated = false;
+    let mut after_match = 0usize;
 
-    for line in reader.lines() {
-        let line = line?;
+    while let Some(line) = read_log_line(&mut reader, &mut line_buffer)? {
         lines_scanned = lines_scanned.saturating_add(1);
-        let haystack = if ignore_case { line.to_lowercase() } else { line.clone() };
-        if haystack.contains(&needle_normalized) {
-            if matches.len() < limit {
-                matches.push(LogMatch { line_number: lines_scanned, text: line });
-            } else {
+        let normalized = if ignore_case {
+            line.to_lowercase()
+        } else {
+            line.clone()
+        };
+        let is_match = normalized.contains(&needle_normalized);
+        let current = LogMatch {
+            line_number: lines_scanned,
+            text: line.clone(),
+        };
+
+        if is_match {
+            if matches.len() >= limit {
                 results_truncated = true;
                 break;
             }
+            matches.push(current.clone());
+            for entry in &previous {
+                append_context_line(&mut output_lines, &mut output_index, entry, false);
+            }
+            append_context_line(&mut output_lines, &mut output_index, &current, true);
+            after_match = context;
+        } else {
+            if after_match > 0 {
+                append_context_line(&mut output_lines, &mut output_index, &current, false);
+                after_match -= 1;
+            }
+        }
+
+        if context > 0 {
+            if previous.len() == context {
+                previous.pop_front();
+            }
+            previous.push_back(current);
         }
     }
 
-    Ok(SearchResult { matches, lines_scanned, results_truncated })
+    Ok(ContextSearchResult {
+        lines: output_lines,
+        matches,
+        lines_scanned,
+        results_truncated,
+    })
+}
+
+fn append_context_line(
+    lines: &mut Vec<ContextLine>,
+    index: &mut HashMap<usize, usize>,
+    entry: &LogMatch,
+    is_match: bool,
+) {
+    if let Some(position) = index.get(&entry.line_number).copied() {
+        lines[position].is_match |= is_match;
+        return;
+    }
+
+    index.insert(entry.line_number, lines.len());
+    lines.push(ContextLine {
+        line_number: entry.line_number,
+        text: entry.text.clone(),
+        is_match,
+    });
 }
 
 /// Keep the last N lines that match an optional substring.
@@ -206,13 +359,21 @@ pub fn recent_matching_lines(
     count: usize,
 ) -> io::Result<Vec<LogMatch>> {
     let file = open_regular_file(path)?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let count = clamp_line_count(count);
-    let needle_normalized = needle.map(|s| if ignore_case { s.to_lowercase() } else { s.to_owned() });
+    let needle_normalized = needle.map(|s| {
+        if ignore_case {
+            s.to_lowercase()
+        } else {
+            s.to_owned()
+        }
+    });
     let mut matches = VecDeque::with_capacity(count);
+    let mut line_buffer = Vec::new();
+    let mut line_number = 0usize;
 
-    for (index, line) in reader.lines().enumerate() {
-        let line = line?;
+    while let Some(line) = read_log_line(&mut reader, &mut line_buffer)? {
+        line_number = line_number.saturating_add(1);
         let is_match = match needle_normalized.as_deref() {
             None => true,
             Some(needle) if ignore_case => line.to_lowercase().contains(needle),
@@ -222,7 +383,10 @@ pub fn recent_matching_lines(
             if matches.len() == count {
                 matches.pop_front();
             }
-            matches.push_back(LogMatch { line_number: index + 1, text: line });
+            matches.push_back(LogMatch {
+                line_number,
+                text: line,
+            });
         }
     }
 
@@ -232,13 +396,18 @@ pub fn recent_matching_lines(
 /// A deliberately small keyword filter for the `errors` convenience command.
 pub fn looks_like_problem(text: &str) -> bool {
     let lower = text.to_lowercase();
-    ["error", "failed", "failure", "warning", "critical", "denied", "segfault", "panic", "fatal"]
-        .iter()
-        .any(|word| lower.contains(*word))
+    [
+        "error", "failed", "failure", "warning", "critical", "denied", "segfault", "panic", "fatal",
+    ]
+    .iter()
+    .any(|word| lower.contains(*word))
 }
 
 pub fn is_valid_priority(value: &str) -> bool {
-    matches!(value.to_ascii_lowercase().as_str(), "emerg" | "alert" | "crit" | "err" | "warning" | "notice" | "info" | "debug")
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "emerg" | "alert" | "crit" | "err" | "warning" | "notice" | "info" | "debug"
+    )
 }
 
 #[cfg(test)]
@@ -246,9 +415,15 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temporary_file(contents: &str) -> PathBuf {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir().join(format!("forgehelpyou-test-{}-{nonce}.log", std::process::id()));
+    fn temporary_file(contents: &[u8]) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "forgehelpyou-test-{}-{nonce}.log",
+            std::process::id()
+        ));
         std::fs::write(&path, contents).unwrap();
         path
     }
@@ -260,18 +435,22 @@ mod tests {
 
     #[test]
     fn unknown_source_is_treated_as_path() {
-        assert_eq!(resolve_source("./sample.log"), PathBuf::from("./sample.log"));
+        assert_eq!(
+            resolve_source("./sample.log"),
+            PathBuf::from("./sample.log")
+        );
     }
 
     #[test]
-    fn clamps_line_count() {
+    fn clamps_line_count_and_context() {
         assert_eq!(clamp_line_count(0), 1);
         assert_eq!(clamp_line_count(99_999), MAX_LINE_COUNT);
+        assert_eq!(clamp_context_lines(99), MAX_CONTEXT_LINES);
     }
 
     #[test]
     fn tail_returns_last_lines_in_order() {
-        let path = temporary_file("one\ntwo\nthree\nfour\n");
+        let path = temporary_file(b"one\ntwo\nthree\nfour\n");
         let result = tail_file(&path, 2).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(result, vec!["three", "four"]);
@@ -279,7 +458,7 @@ mod tests {
 
     #[test]
     fn tail_handles_missing_final_newline_and_utf8() {
-        let path = temporary_file("первая\nвторая");
+        let path = temporary_file("первая\nвторая".as_bytes());
         let result = tail_file(&path, 1).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(result, vec!["вторая"]);
@@ -287,7 +466,7 @@ mod tests {
 
     #[test]
     fn tail_keeps_blank_lines() {
-        let path = temporary_file("one\n\n");
+        let path = temporary_file(b"one\n\n");
         let result = tail_file(&path, 2).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(result, vec!["one", ""]);
@@ -295,16 +474,26 @@ mod tests {
 
     #[test]
     fn tail_handles_a_file_larger_than_one_read_chunk() {
-        let contents = (0..20_000).map(|n| format!("line-{n}\n")).collect::<String>();
-        let path = temporary_file(&contents);
+        let contents = (0..20_000)
+            .map(|n| format!("line-{n}\n"))
+            .collect::<String>();
+        let path = temporary_file(contents.as_bytes());
         let result = tail_file(&path, 2).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(result, vec!["line-19998", "line-19999"]);
     }
 
     #[test]
+    fn invalid_utf8_is_replaced_when_tailing() {
+        let path = temporary_file(b"before\ninvalid-\xff-byte\n");
+        let result = tail_file(&path, 1).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(result, vec!["invalid-\u{fffd}-byte"]);
+    }
+
+    #[test]
     fn searches_case_insensitively_and_reports_line_numbers() {
-        let path = temporary_file("started\nSSH failed\nfinished\n");
+        let path = temporary_file(b"started\nSSH failed\nfinished\n");
         let result = search_file(&path, "ssh", true, 10).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(result.matches.len(), 1);
@@ -314,7 +503,7 @@ mod tests {
 
     #[test]
     fn search_marks_truncated_results() {
-        let path = temporary_file("error one\nerror two\nerror three\n");
+        let path = temporary_file(b"error one\nerror two\nerror three\n");
         let result = search_file(&path, "error", false, 2).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(result.matches.len(), 2);
@@ -322,11 +511,47 @@ mod tests {
     }
 
     #[test]
+    fn search_supports_context_and_merges_overlapping_windows() {
+        let path = temporary_file(b"zero\nfailed one\nmiddle\nfailed two\nend\n");
+        let result = search_file_with_context(&path, "failed", false, 10, 1).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(result.matches.len(), 2);
+        assert_eq!(
+            result
+                .lines
+                .iter()
+                .map(|line| line.line_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+        assert_eq!(
+            result
+                .lines
+                .iter()
+                .map(|line| line.is_match)
+                .collect::<Vec<_>>(),
+            vec![false, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn search_context_handles_invalid_utf8() {
+        let path = temporary_file(b"before-\xff\nerror happened\nafter\n");
+        let result = search_file_with_context(&path, "error", false, 10, 1).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(result.lines.len(), 3);
+        assert_eq!(result.lines[0].text, "before-\u{fffd}");
+    }
+
+    #[test]
     fn recent_matching_lines_keeps_latest_matches() {
-        let path = temporary_file("ok\nfailed one\nok\nfailed two\nfailed three\n");
+        let path = temporary_file(b"ok\nfailed one\nok\nfailed two\nfailed three\n");
         let result = recent_matching_lines(&path, Some("failed"), false, 2).unwrap();
         std::fs::remove_file(path).unwrap();
-        assert_eq!(result.iter().map(|m| m.line_number).collect::<Vec<_>>(), vec![4, 5]);
+        assert_eq!(
+            result.iter().map(|m| m.line_number).collect::<Vec<_>>(),
+            vec![4, 5]
+        );
     }
 
     #[test]

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Add `search --context N` to print nearby lines around each match.
+- Merge overlapping context windows so lines are not printed twice.
+- Replace invalid UTF-8 sequences while reading logs instead of aborting the operation.
+- Add tests for context windows, overlapping matches, and invalid UTF-8 input.
+
 ## 0.2.0
 
 - Add `recent` to find and display a readable general-purpose log automatically.
